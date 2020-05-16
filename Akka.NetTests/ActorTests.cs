@@ -1,11 +1,20 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Serialization;
 using Akka.Actor;
+using Akka.Configuration;
+using Akka.Dispatch;
 using Akka.Event;
+using Akka.IO;
+using Akka.Routing;
 using Akka.TestKit;
 using Xunit;
 
@@ -19,7 +28,7 @@ namespace Akka.NetTests
             {
                 Receive<string>(_ =>
                 {
-                    Sender.Tell("Ctor behavior.", Self);
+                    Sender.Tell("Ctor behavior."); // Sends the sender implicitly.
                     Become(SecondBehavior); // Never call Become from ctor. It has no effects then.
                 });
             }
@@ -28,7 +37,7 @@ namespace Akka.NetTests
             {
                 Receive<string>(_ =>
                 {
-                    Sender.Tell("Other behavior.", Self);
+                    Sender.Tell("Other behavior.");
                 });
             }
         }
@@ -125,12 +134,69 @@ namespace Akka.NetTests
 
             protected override void OnReceive(object message)
             {
-                _recipient.Forward(message);
+                _recipient.Tell(message);
+            }
+        }
+
+        public sealed class SupervisorActor : UntypedActor
+        {
+            private IActorRef? _friend;
+
+            protected override SupervisorStrategy SupervisorStrategy()
+            {
+                return new OneForOneStrategy(5, 
+                    TimeSpan.FromMinutes(1), 
+                    ex => ex is NullReferenceException 
+                        ? Directive.Escalate 
+                        : Directive.Resume);
+            }
+
+            protected override void OnReceive(object message)
+            {
+                switch (message)
+                {
+                    case Props p:
+                    {
+                        var child = Context.ActorOf(p);
+                        Sender.Tell(child);
+                        break;
+                    }
+                    case IActorRef a:
+                        _friend = a;
+                        break;
+                }
+            }
+
+            protected override void PreRestart(Exception reason, object message)
+            {
+                _friend?.Tell("I'm gonna commit seppuku.");
+                Self.Tell(PoisonPill.Instance);
+                // base.PreRestart(reason, message); - Don't shutdown. Orphan children.
+            }
+        }
+
+        public sealed class SupervisedActor : UntypedActor
+        {
+            private string _state = string.Empty;
+
+            protected override void OnReceive(object message)
+            {
+                switch (message)
+                {
+                    case Exception ex:
+                        throw ex;
+                    case "get":
+                        Sender.Tell(_state);
+                        break;
+                    case string str:
+                        _state = str;
+                        break;
+                }
             }
         }
 
         [Fact]
-        public async void ActorInitialBehaviorComesFromCtor()
+        public async Task ActorInitialBehaviorComesFromCtor()
         {
             Props autProps = Props.Create<VariableBehaviorActor>();
             IActorRef aut = Sys.ActorOf(autProps);
@@ -188,7 +254,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void ActorStopsRespondingAfterBeingKilled()
+        public async Task ActorStopsRespondingAfterBeingKilled()
         {
             var aut = Sys.ActorOf<EchoActor>();
 
@@ -210,7 +276,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void NonAkkaTestAwaitCollectsAggregateExOnCancellation()
+        public async Task NonAkkaTestAwaitCollectsAggregateExOnCancellation()
         {
             var cts = new CancellationTokenSource();
 
@@ -245,7 +311,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void ActorStopsRespondingAfterBeingPoisoned()
+        public async Task ActorStopsRespondingAfterBeingPoisoned()
         {
             var aut = Sys.ActorOf<EchoActor>();
 
@@ -267,7 +333,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void ActorStopsRespondingAfterThrowingEx()
+        public async Task ActorStopsRespondingAfterThrowingEx()
         {
             var aut = Sys.ActorOf<SelfStoppingEchoActor>();
 
@@ -398,28 +464,345 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public void FsmActorWorksAsExpected()
+        public async Task EscalatesOnlyNullToSupervisor()
         {
-            var system = ActorSystem.Create("mySystem");
+            var supervisor = Sys.ActorOf<SupervisorActor>();
+            var probe = CreateTestProbe();
+
+            supervisor.Tell(probe.Ref);
+            var child = await supervisor.Ask<IActorRef>(Props.Create<SupervisedActor>());
+
+            child.Tell("get");
+            ExpectMsg(string.Empty);
+
+            child.Tell("New state.");
+            ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+
+            child.Tell(new InvalidOperationException());
+            ExpectNoMsg(TimeSpan.FromMilliseconds(200));
+
+            child.Tell("get");
+            ExpectMsg("New state.");
+
+            Watch(supervisor);
+            Sys.EventStream.Subscribe(probe.Ref, typeof(DeadLetter));
+
+            child.Tell(new NullReferenceException());
+            probe.ExpectMsg<string>((msg, sender) =>
+                msg == "I'm gonna commit seppuku." && sender.Equals(supervisor));
+            ExpectTerminated(supervisor);
+
+            Unwatch(supervisor);
+
+            child.Tell("Are you alive?");
+            probe.ExpectMsg<DeadLetter>(dl => 
+                (string) dl.Message == "Are you alive?"); // Child is killed along with supervisor
+                                                          // therefore the last msg becomes a dead letter.
+
+            Sys.EventStream.Unsubscribe(probe.Ref);
+        }
+
+        [Fact]
+        public async Task ActorRefsAreEqualToThoseOfActorSelection()
+        {
+            var actor0 = Sys.ActorOf(Props.Empty, "actor0");
+            var actor1 = Sys.ActorOf(Props.Empty, "actor1");
+
+            var actor0_ = await ActorSelection(actor0.Path.ToString()).ResolveOne(TimeSpan.FromMilliseconds(100));
+            var actor1_ = await ActorSelection(actor1.Path.ToString()).ResolveOne(TimeSpan.FromMilliseconds(100));
+
+            Assert.True(actor0.Equals(actor0_));
+            Assert.True(actor1.Equals(actor1_));
+        }
+
+        [Fact]
+        public async Task CoordinatedShutdownTerminatesActorSystemGracefully()
+        {
+            var system0 = ActorSystem.Create("system0");
+            var actorOfSystem0 = system0.ActorOf(Props.Empty);
+            var system1 = ActorSystem.Create("system1");
+            var actorOfSystem1 = system1.ActorOf(Props.Empty);
+
+            Watch(actorOfSystem0);
+            Watch(actorOfSystem1);
+
+            ExpectNoMsg(TimeSpan.FromMilliseconds(250));
+
+            var shutdownTask =
+                CoordinatedShutdown.Get(system0)
+                    .Run(CoordinatedShutdown.ClrExitReason.Instance);
+
+            await shutdownTask;
+
+            ExpectTerminated(actorOfSystem0);
+            ExpectNoMsg(250);
+
+            Unwatch(actorOfSystem0);
+            Unwatch(actorOfSystem1);
+        }
+
+        public sealed class SimulatingHardWorkActor : ReceiveActor
+        {
+            private readonly IActorRef _countRecipient;
+            private int _counter;
+            public SimulatingHardWorkActor(IActorRef countRecipient)
+            {
+                _countRecipient = countRecipient;
+
+                Receive<string>(str => str == "get", str =>
+                    _countRecipient.Tell(_counter));
+
+                Receive<object>(o =>
+                {
+                    Thread.Sleep(10);
+                    _counter++;
+                });
+            }
+        }
+
+        [Fact]
+        public void RouterResizesDueToTrafficSimulatedByBroadcast()
+        {
+            var probe = CreateTestProbe();
+
+            var resizer = new DefaultResizer(
+                1,
+                10,
+                1,
+                5D,
+                0.01D,
+                0D,
+                1);
+
+            var randomPoolRouter =
+                new RandomPool(1).WithResizer(resizer);
+            var randomPoolRouterProps = Props.Create<SimulatingHardWorkActor>(probe.Ref).WithRouter(randomPoolRouter);
+            var randomPoolRouterActor = Sys.ActorOf(randomPoolRouterProps, "randPoolRouter");
+
+            var broadcastRouterActor = 
+                Sys.ActorOf(Props.Create<ForwardingActor>(randomPoolRouterActor).WithRouter(new BroadcastPool(50)), "bcastRouter");
             
+            randomPoolRouterActor.Tell(GetRoutees.Instance);
+            var routeesBefore = ExpectMsg<Routees>();
+            Assert.Equal(routeesBefore.Members.Count(), randomPoolRouter.NrOfInstances);
+
+            broadcastRouterActor.Tell("SPAM");
+            Task.Delay(1000).Wait(); // After this delay, first message batch should be processed (probably by only one routee).
+            broadcastRouterActor.Tell("SPAM");
+            Task.Delay(1000).Wait(); // After this delay, second message batch should be processed by more than one routee.
+
+            randomPoolRouterActor.Tell(new Broadcast("get"));
+            var msgList = probe.ReceiveWhile(TimeSpan.FromMilliseconds(1000), o => o);
+            Assert.Equal(100, msgList.Aggregate(0, (agg, curr) => (int)curr + agg));
+
+            randomPoolRouterActor.Tell(GetRoutees.Instance);
+            var routeesAfter = ExpectMsg<Routees>();
+            Assert.Equal(10, routeesAfter.Members.Count()); // Should be already resized to the upper pool limit.
+        }
+
+        #region FSM Events
+
+        public sealed class ConfigureEvent
+        {
+            public string FilePath { get; }
+
+            public ConfigureEvent(string filePath)
+            {
+                FilePath = filePath;
+            }
+        }
+
+        public sealed class AppendEvent
+        {
+            public string StrToAppend { get; }
+
+            public AppendEvent(string strToAppend)
+            {
+                StrToAppend = strToAppend;
+            }
+        }
+
+        public sealed class FlushEvent
+        {
+            private FlushEvent() { }
+
+            static FlushEvent()
+            {
+                Instance = new FlushEvent();
+            }
+            public static FlushEvent Instance { get; }
+        }
+
+        #endregion
+
+        #region FSM States
+
+        public enum State
+        {
+            Buffering,
+            Closed
+        }
+
+        #endregion
+
+        #region FSM Data
+
+        public interface IBurstWriterData { } // Marker interface.
+
+        public sealed class Uninitialized : IBurstWriterData
+        {
+            private Uninitialized() { }
+            // Tell the c# compiler not to mark the type as beforefieldinit.
+            static Uninitialized()
+            {
+                Instance = new Uninitialized();
+            } 
+            public static Uninitialized Instance { get; }
+        }
+
+        public sealed class Buffer : IBurstWriterData
+        {
+            public string Path { get; }
+            public IEnumerable<string> Queue { get; }
+
+            public Buffer(string path, IEnumerable<string> queue)
+            {
+                Path = path;
+                Queue = queue;
+            }
+        }
+
+        #endregion
+
+        public sealed class BurstWriterActor : FSM<State, IBurstWriterData>
+        {
+            private readonly ILoggingAdapter _logger = Context.GetLogger();
+            private readonly TimeSpan _bufferingTimeout;
+            public BurstWriterActor(TimeSpan bufferingTimeout)
+            {
+                _bufferingTimeout = bufferingTimeout;
+
+                StartWith(State.Closed, Uninitialized.Instance);
+
+                When(State.Closed, state =>
+                {
+                    return state.FsmEvent switch
+                    {
+                        ConfigureEvent ce when state.StateData is Uninitialized => GoTo(State.Buffering)
+                            .Using(new Buffer(ce.FilePath, Enumerable.Empty<string>())),
+                        AppendEvent ae when state.StateData is Buffer b => GoTo(State.Buffering)
+                            .Using(new Buffer(b.Path, b.Queue.Append(ae.StrToAppend))),
+                        _ => null
+                    };
+                });
+
+                When(State.Buffering, state =>
+                {
+                    return state.FsmEvent switch
+                    {
+                        AppendEvent ae when state.StateData is Buffer b => GoTo(State.Buffering)
+                            .Using(new Buffer(b.Path, b.Queue.Append(ae.StrToAppend))),
+                        StateTimeout _ => GoTo(State.Closed),
+                        _ => null
+                    };
+                }, _bufferingTimeout);
+
+                WhenUnhandled(state =>
+                {
+                    if (state.FsmEvent is FlushEvent && state.StateData is Buffer b)
+                    {
+                        using var fs = new FileStream(b.Path,
+                            FileMode.OpenOrCreate,
+                            FileAccess.Write,
+                            FileShare.Read);
+                        fs.Position = fs.Length;
+                        using var tw = new StreamWriter(fs);
+
+                        tw.Write(string.Concat(b.Queue));
+
+                        return GoTo(State.Closed).Using(new Buffer(b.Path, Enumerable.Empty<string>()));
+                    }
+                    else
+                    {
+                        _logger.Warning("Received unhandled request {0} in state {1}/{2}", state.FsmEvent, StateName, state.StateData);
+                        return Stay();
+                    }
+                });
+
+                OnTransition((prevState, nextState) =>
+                {
+                    if (prevState == State.Buffering && nextState == State.Closed)
+                        if (StateData is Buffer b)
+                            Self.Tell(FlushEvent.Instance);
+                });
+            }
         }
 
         [Fact]
-        public void EscalatesOnlyNullToSupervisor()
+        public async Task FsmActorImplementsBurstWriterWithProtectedResource()
         {
+            var texts = "Start string.;Next string.\n;End string.".Split(';', StringSplitOptions.RemoveEmptyEntries);
 
-        }
+            var aut = Sys.ActorOf(Props.Create<BurstWriterActor>(TimeSpan.FromSeconds(1)));
 
-        [Fact]
-        public void DeathWatchHooksIntoActorsByActorSelection()
-        {
+            var tempFilePath = Path.GetTempFileName();
+            aut.Tell(new ConfigureEvent(tempFilePath));
 
-        }
+            aut.Tell(new AppendEvent(texts[0]));
+            Thread.Sleep(1500);
+            aut.Tell(new AppendEvent(texts[1]));
+            Thread.Sleep(500);
+            aut.Tell(new AppendEvent(texts[2]));
 
-        [Fact]
-        public void CoordinatedShutdownTerminatesActorSystemGracefully()
-        {
+            var expectedFileContent = string.Concat(texts);
+            var actualFileContent = 
+                await WaitForFileContentAsync(expectedFileContent, tempFilePath, TimeSpan.FromSeconds(3.5));
 
+            Assert.Equal(expectedFileContent, actualFileContent);
+
+            #region Local methods
+
+            static Task<string> WaitForFileContentAsync(string expectedSubcontent, string filePath, TimeSpan? timeout = null)
+            {
+                return Task.Run(() =>
+                {
+                    string content;
+                    var stopwatch = Stopwatch.StartNew();
+                    do
+                    {
+                        using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
+                        using var sr = new StreamReader(fs);
+                        content = sr.ReadToEnd();
+                        Thread.Sleep(TimeSpan.FromMilliseconds(100));
+                    } while (!content.Contains(expectedSubcontent) &&
+                             stopwatch.Elapsed < (timeout ?? TimeSpan.MaxValue));
+                    return content;
+                });
+            }
+
+            static async Task<string> WaitForFileContentAsync2(string expectedSubcontent, string filePath, TimeSpan? timeout = null)
+            {
+                var tcs = new TaskCompletionSource<string>();
+
+                Task.Run(() =>
+                {
+                    string content;
+                    var stopwatch = Stopwatch.StartNew();
+                    do
+                    {
+                        using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
+                        using var sr = new StreamReader(fs);
+                        content = sr.ReadToEnd();
+                        Thread.Sleep(TimeSpan.FromMilliseconds(100));
+                    } while (!content.Contains(expectedSubcontent) &&
+                             stopwatch.Elapsed < (timeout ?? TimeSpan.MaxValue));
+                    tcs.SetResult(content);
+                });
+
+                return await tcs.Task;
+            }
+
+            #endregion
         }
     }
 }

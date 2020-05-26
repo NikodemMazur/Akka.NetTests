@@ -218,7 +218,7 @@ namespace Akka.NetTests
             sub0.ExpectMsg("Oh, Hi! Sry, but I gotta go, bye!"); // Echo.
             uniqueKillSwitch0.Shutdown(); // Looks like this Shutdown is non-blocking.
             sub0.ExpectMsg("complete", 
-                TimeSpan.FromMilliseconds(100)); // Wait for the running graph to stop.
+                TimeSpan.FromMilliseconds(1000)); // Wait for the running graph to stop.
             sub1.ExpectMsg("Oh, Hi! Sry, but I gotta go, bye!");
             pub1.Tell("Oh, looks like I stayed alone.");
             sub1.ExpectMsg("Oh, looks like I stayed alone."); // Echo.

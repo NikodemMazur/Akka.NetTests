@@ -115,12 +115,12 @@ namespace Akka.NetTests
             protected override void OnReceive(object message)
             {
                 if ((message as string)?.Contains("stash", StringComparison.OrdinalIgnoreCase) ?? false)
-                    Stash.Stash();
+                    Stash!.Stash();
                 else
                     Sender.Tell(message, Self);
             }
 
-            public IStash Stash { get; set; }
+            public IStash? Stash { get; set; }
         }
 
         public sealed class ForwardingActor : UntypedActor
@@ -759,50 +759,33 @@ namespace Akka.NetTests
                 await WaitForFileContentAsync(expectedFileContent, tempFilePath, TimeSpan.FromSeconds(3.5));
 
             Assert.Equal(expectedFileContent, actualFileContent);
+        }
 
-            #region Local methods
-
-            static Task<string> WaitForFileContentAsync(string expectedSubcontent, string filePath, TimeSpan? timeout = null)
+        public static Task<string> WaitForFileContentAsync(string expectedSubcontent, string filePath, TimeSpan? timeout = null)
+        {
+            return Task.Run(() =>
             {
-                return Task.Run(() =>
+                string content;
+                var stopwatch = Stopwatch.StartNew();
+                try
                 {
-                    string content;
-                    var stopwatch = Stopwatch.StartNew();
                     do
                     {
-                        using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
+                        using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Read,
+                            FileShare.ReadWrite);
                         using var sr = new StreamReader(fs);
                         content = sr.ReadToEnd();
+
                         Thread.Sleep(TimeSpan.FromMilliseconds(100));
                     } while (!content.Contains(expectedSubcontent) &&
                              stopwatch.Elapsed < (timeout ?? TimeSpan.MaxValue));
-                    return content;
-                });
-            }
-
-            static async Task<string> WaitForFileContentAsync2(string expectedSubcontent, string filePath, TimeSpan? timeout = null)
-            {
-                var tcs = new TaskCompletionSource<string>();
-
-                Task.Run(() =>
+                }
+                catch (FileNotFoundException)
                 {
-                    string content;
-                    var stopwatch = Stopwatch.StartNew();
-                    do
-                    {
-                        using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
-                        using var sr = new StreamReader(fs);
-                        content = sr.ReadToEnd();
-                        Thread.Sleep(TimeSpan.FromMilliseconds(100));
-                    } while (!content.Contains(expectedSubcontent) &&
-                             stopwatch.Elapsed < (timeout ?? TimeSpan.MaxValue));
-                    tcs.SetResult(content);
-                });
-
-                return await tcs.Task;
-            }
-
-            #endregion
+                    content = string.Empty;
+                }
+                return content;
+            });
         }
     }
 }

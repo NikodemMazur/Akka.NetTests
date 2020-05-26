@@ -103,21 +103,22 @@ namespace Akka.NetTests
                 {
                     EnterBarrier("seed1-address-receiver-ready");
                     var seedNode1Address = Akka.Cluster.Cluster.Get(_seed1System.Value).SelfAddress;
-                    foreach (var r in ImmutableList.Create(_config.Seed2))
-                    {
-                        Sys.ActorSelection(new RootActorPath(GetAddress(r)) / "user" / "address-receiver").Tell(seedNode1Address);
-                        ExpectMsg("ok", TimeSpan.FromSeconds(5));
-                    }
+                    Sys.ActorSelection(new RootActorPath(GetAddress(_config.Seed2)) / "user" / "address-receiver").Tell(seedNode1Address);
+                    ExpectMsg("ok", TimeSpan.FromSeconds(5));
                     EnterBarrier("seed1-address-transferred");
-                }, _config.Seed1);
-
-                // now we can join seed1System, seed2 together
-                RunOn(() =>
-                {
+                    // now we can join seed1System, seed2 together
                     Akka.Cluster.Cluster.Get(_seed1System.Value).JoinSeedNodes(SeedNodes);
                     AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.Count.Should().Be(2));
                     AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
                 }, _config.Seed1);
+
+                //// now we can join seed1System, seed2 together
+                //RunOn(() =>
+                //{
+                    //Akka.Cluster.Cluster.Get(_seed1System.Value).JoinSeedNodes(SeedNodes);
+                    //AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.Count.Should().Be(2));
+                    //AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
+                //}, _config.Seed1);
 
                 RunOn(() =>
                 {

@@ -787,5 +787,35 @@ namespace Akka.NetTests
                 return content;
             });
         }
+
+        public class ParentActor : UntypedActor
+        {
+            private static object? _privateField;
+            public class ChildActor : UntypedActor
+            {
+                protected override void OnReceive(object message)
+                {
+                    _privateField = message;
+                }
+            }
+
+            protected override void OnReceive(object message)
+            {
+                if (message is "get")
+                    Sender.Tell(_privateField);
+            }
+        }
+
+        [Fact]
+        public async Task NestedChildActorDirectlyUpdatesParentPrivateStaticField()
+        {
+            var parentActor = Sys.ActorOf<ParentActor>();
+            var nestedChildActor = Sys.ActorOf<ParentActor.ChildActor>();
+
+            nestedChildActor.Tell("updated field");
+            var answer = await parentActor.Ask<string>("get");
+
+            Assert.Equal("updated field", answer);
+        }
     }
 }

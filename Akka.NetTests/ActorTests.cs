@@ -14,6 +14,7 @@ using Akka.Configuration;
 using Akka.Dispatch;
 using Akka.Event;
 using Akka.IO;
+using Akka.Persistence;
 using Akka.Routing;
 using Akka.TestKit;
 using Xunit;
@@ -816,6 +817,48 @@ namespace Akka.NetTests
             var answer = await parentActor.Ask<string>("get");
 
             Assert.Equal("updated field", answer);
+        }
+
+        [Fact]
+        public void ActorRecoversItsStateWithEventsWhenRestarted()
+        {
+            
+        }
+
+        [Fact]
+        public void ActorRecoversItsStateAtOnceWithSnapshotWhenRestarted()
+        {
+
+        }
+
+        [Fact]
+        public void SenderOfReplayedMessageIsDeadLetters()
+        {
+
+        }
+
+        [Fact]
+        public void DeferAsyncDoesNotStoreEvents()
+        {
+
+        }
+
+        [Fact]
+        public void PoisonPillBreaksPersisting()
+        {
+
+        }
+
+        [Fact]
+        public void AtLeastOnceDeliveryActorGetsDeliveryConfirmationAfterBeingRestarted()
+        {
+
+        }
+
+        [Fact]
+        public void AtLeastOnceDeliveryActorSetsDeliverySnapshotDuringRecovery()
+        {
+
         }
     }
 }

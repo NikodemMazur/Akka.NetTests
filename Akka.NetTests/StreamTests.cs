@@ -70,7 +70,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void RunnableGraphMadeOfBackpressuredQueueAndActorRefWithAckWorksAsExpected()
+        public async Task RunnableGraphMadeOfBackpressuredQueueAndActorRefWithAckWorksAsExpected()
         {
             const int MAX = 4;
 
@@ -136,7 +136,7 @@ namespace Akka.NetTests
         }
 
         [Fact]
-        public async void ElementsShouldBeDroppedAtDivideByZeroEx()
+        public async Task ElementsShouldBeDroppedAtDivideByZeroEx()
         {
             Streams.Supervision.Decider decider = 
                 cause => cause is DivideByZeroException 

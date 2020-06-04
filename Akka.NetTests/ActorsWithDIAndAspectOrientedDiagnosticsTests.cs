@@ -86,7 +86,7 @@ namespace Akka.NetTests
             loggingActor.Tell("Log this message, please.");
             loggingActor.Tell(new NullReferenceException());
 
-            var logContent = await ActorTests.WaitForFileContentAsync("Log this message, please.", LogPath, TimeSpan.FromSeconds(3));
+            var logContent = await ActorTests.WaitForFileContentAsync("Log this message, please.", LogPath, TimeSpan.FromSeconds(10));
             Assert.Contains("Actor system created.", logContent);
             Assert.Contains("Log this message, please.", logContent);
         }

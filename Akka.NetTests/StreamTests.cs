@@ -9,6 +9,8 @@ using System.Threading;
 using System.Linq;
 using System.Collections.Generic;
 using Akka.Actor;
+using FluentAssertions;
+using Akka.Persistence;
 
 namespace Akka.NetTests
 {
@@ -225,10 +227,323 @@ namespace Akka.NetTests
             sub0.ExpectNoMsg();
         }
 
+        public class StreamInts
+        {
+            public StreamInts(Guid streamId)
+            {
+                StreamId = streamId;
+            }
+
+            public Guid StreamId { get; }
+        }
+
+        public class IntsStreamCreated
+        {
+            public IntsStreamCreated(Guid streamId, ISourceRef<int> sourceRef)
+            {
+                StreamId = streamId;
+                SourceRef = sourceRef;
+            }
+
+            public Guid StreamId { get; }
+            public ISourceRef<int> SourceRef { get; }
+        }
+
+        public class ElementEnqueued
+        {
+            private ElementEnqueued() { }
+            static ElementEnqueued()
+            {
+                Instance = new ElementEnqueued();
+            }
+            public static ElementEnqueued Instance { get; }
+        }
+
+        public class PersistentStreamWriterActor : UntypedPersistentActor, IWithUnboundedStash
+        {
+            private class Send
+            {
+                public static Send Instance { get; }
+                private Send() { }
+                static Send() 
+                {
+                    Instance = new Send();
+                }
+            }
+
+            private readonly IRunnableGraph<(ISourceQueueWithComplete<int>, Task<ISourceRef<int>>)> _runnableGraph;
+            private readonly int[] _data = new[] { -2, -1, 0, 1, 2, 3 };
+            private int _index;
+            private ISourceQueueWithComplete<int>? _queue;
+
+            public new IStash? Stash { get; set; }
+
+            public override string PersistenceId => Self.Path.Name;
+
+            private void Handle(ElementEnqueued elementEnqueued)
+            {
+                _index++;
+            }
+
+            private void Streaming(object message)
+            {
+                if (message is Send)
+                {
+                    if (_data.Count() > _index)
+                        _queue!
+                            .OfferAsync(_data[_index])
+                            .PipeTo(Self, success: () => Send.Instance);
+                    else
+                    {
+                        _queue!.Complete();
+                        Become(Idling);
+                        Stash!.Unstash();
+                    }
+                }
+                else
+                    Stash!.Stash();
+            }
+
+            public void Idling(object message)
+            {
+                switch (message)
+                {
+                    case StreamInts si:
+                        var t = _runnableGraph
+                            .Run(Context.System.Materializer());
+                        _queue = t.Item1;
+                        t.Item2.PipeTo(Sender, success: sr => new IntsStreamCreated(si.StreamId, sr));
+                        Become(Streaming);
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            public PersistentStreamWriterActor()
+            {
+                const int MAX = 4;
+                Source<int, ISourceQueueWithComplete<int>> source = Source.Queue<int>(MAX, OverflowStrategy.Backpressure);
+                Sink<int, Task<ISourceRef<int>>>? sink = StreamRefs.SourceRef<int>();
+
+                _runnableGraph = source.ToMaterialized(sink, Keep.Both);
+            }
+
+            protected override void OnCommand(object message)
+            {
+                var ex = new ActorInitializationException();
+                Sender.Tell(ex);
+                throw ex;
+            }
+
+            protected override void OnRecover(object message)
+            {
+                switch (message)
+                {
+                    case ElementEnqueued eq:
+                        Handle(eq);
+                        break;
+                    case RecoveryCompleted _:
+                        if (_data.Count() > _index)
+                            Become(Streaming);
+                        else
+                            Become(Idling);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
         [Fact]
         public void ActorHandlesPersistenceOfUsedStream()
         {
             throw new NotImplementedException();
+        }
+
+        public class RequestLogs
+        {
+            public long StreamId { get; }
+            public RequestLogs(long streamId)
+            {
+                StreamId = streamId;
+            }
+        }
+
+        public class LogsOffer
+        {
+            public long StreamId { get; }
+            public ISourceRef<string> SourceRef { get; }
+            public LogsOffer(long streamId, ISourceRef<string> sourceRef)
+            {
+                StreamId = streamId;
+                SourceRef = sourceRef;
+            }
+        }
+
+        public class LogsSourceActor : ReceiveActor
+        {
+            public LogsSourceActor()
+            {
+                Receive<RequestLogs>(req =>
+                {
+                    var streamLogs = Source.From(Enumerable.Range(1, 5)).Select(i => i.ToString());
+                    streamLogs.ToMaterialized(StreamRefs.SourceRef<string>(), Keep.Right)
+                              .Run(Context.System.Materializer())
+                              .PipeTo(Sender, success: sourceRef => new LogsOffer(req.StreamId, sourceRef));
+                });
+            }
+        }
+
+        [Fact]
+        public async Task TestSysReadsFromAnotherSystemViaStream()
+        {
+            var anotherSystem = ActorSystem.Create("AnotherSystem");
+            var sourceActor = anotherSystem.ActorOf<LogsSourceActor>("LogsSourceActor");
+
+            var streamId = Convert.ToInt64(new Random().Next());
+            var offer = await sourceActor.Ask<LogsOffer>(new RequestLogs(streamId));
+
+            var actual = 
+                await offer
+                    .SourceRef
+                    .Source
+                    .Via(Flow.Create<string>().Grouped(5))
+                    .ToMaterialized(Sink.First<IEnumerable<string>>(), Keep.Right)
+                    .Run(Sys.Materializer());
+
+            Assert.Equal(new[] { "1", "2", "3", "4", "5" }, actual);
+        }
+
+        public class PrepareUpload
+        {
+            public Guid StreamId { get; }
+            public PrepareUpload(Guid streamId)
+            {
+                StreamId = streamId;
+            }
+        }
+
+        public class MeasurementsSinkReady
+        {
+            public Guid StreamId { get; }
+            public ISinkRef<double> SinkRef { get; }
+            public MeasurementsSinkReady(Guid streamId, ISinkRef<double> sinkRef)
+            {
+                StreamId = streamId;
+                SinkRef = sinkRef;
+            }
+        }
+
+        public class StreamCompleted 
+        {
+            public static StreamCompleted Instance { get; }
+            private StreamCompleted() { }
+            static StreamCompleted()
+            {
+                Instance = new StreamCompleted();
+            }
+        }
+
+        public class MeasurementsTargetActor : ReceiveActor
+        {
+            private double _avg;
+            private readonly Sink<double, Task> _avgSink;
+            private readonly IActorRef _thisActorRef;
+            private readonly IActorRef _forwardActorRef;
+            private Task? _streamTask;
+
+            public MeasurementsTargetActor(int windowSize, IActorRef forwardActorRef)
+            {
+                _forwardActorRef = forwardActorRef;
+                _thisActorRef = Context.Self;
+                _avgSink =
+                    Flow
+                        .Create<double>()
+                        .WatchTermination(Keep.Right)
+                        .Sliding(windowSize)
+                        .Collect(win => 
+                            win.Average())
+                        .AlsoTo(Sink.ForEach<double>(avg =>
+                            _forwardActorRef.Tell(avg)))
+                        .To(Sink.ForEach<double>(avg => 
+                            _thisActorRef.Tell(avg))); // Calling Self here, uses Context of the stream instead of the actor!
+
+                Receive<PrepareUpload>(pu =>
+                {
+                    var t = StreamRefs
+                        .SinkRef<double>()
+                        .ToMaterialized(_avgSink, Keep.Both)
+                        .Run(Context.System.Materializer());
+
+                    t.Item1.PipeTo(Sender, success: sr => new MeasurementsSinkReady(pu.StreamId, sr));
+                    _streamTask = t.Item2;
+                });
+
+                Receive<double>(d =>
+                {
+                    _avg = d;
+                });
+
+                Receive<string>(str => str == "notify when stream completes", delegate
+                {
+                    _streamTask.PipeTo(Sender, success: () => StreamCompleted.Instance);
+                });
+
+                Receive<string>(str => str == "get avg", delegate
+                {
+                    Sender.Tell(_avg);
+                });
+            }
+        }
+
+        [Fact]
+        public async Task TestSysWritesToAnotherSystemViaStream()
+        {
+            const int windowSize = 3;
+
+            var anotherSystem = ActorSystem.Create("AnotherSystem");
+            var sinkActorProps = Props.Create<MeasurementsTargetActor>(windowSize, TestActor);
+            var sinkActor = anotherSystem.ActorOf(sinkActorProps, "MeasurementsSinkActor");
+
+            Guid streamId = Guid.NewGuid();
+            var ready = await sinkActor.Ask<MeasurementsSinkReady>(new PrepareUpload(streamId));
+            Assert.Equal(streamId, ready.StreamId);
+
+            var sourceTask = Source
+                .From(Enumerable.Range(1, 4))
+                .Select(i => Convert.ToDouble(i))
+                .WatchTermination(Keep.Right)
+                .To(ready.SinkRef.Sink)
+                .Run(Sys.Materializer()); // Notice that SinkRef is materialized on the Origin-side as well.
+
+            sourceTask.Wait();
+            Assert.True(sourceTask.IsCompletedSuccessfully);
+            await sinkActor.Ask<StreamCompleted>("notify when stream completes");
+
+            ExpectMsg<double>(d => d == (1D + 2D + 3D) / 3D);
+            ExpectMsg<double>(d => d == (2D + 3D + 4D) / 3D);
+        }
+
+        [Fact]
+        public async Task StreamRefThrowsSubscriptionTimeout()
+        {
+            var ex = await Assert.ThrowsAsync<RemoteStreamRefActorTerminatedException>(async delegate
+            {
+                TimeSpan subscriptionTimeout = TimeSpan.FromSeconds(3);
+
+                var sourceRef = await Source
+                    .Single("NeverConsumedMsg")
+                    .RunWith(StreamRefs.SourceRef<string>()
+                        .AddAttributes(StreamRefAttributes.CreateSubscriptionTimeout(subscriptionTimeout)),
+                        Sys.Materializer());
+
+                Task.Delay(subscriptionTimeout).Wait();
+
+                await sourceRef.Source.RunWith(Sink.Ignore<string>(), Sys.Materializer());
+            });
+
+            // ex.InnerException.Should().BeOfType<StreamRefSubscriptionTimeoutException>(); // null inside
         }
     }
 }

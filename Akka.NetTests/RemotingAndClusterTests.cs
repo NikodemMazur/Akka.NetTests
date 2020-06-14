@@ -18,7 +18,7 @@ using Xunit;
 
 namespace Akka.NetTests
 {
-    public class RestartNode2Spec : MultiNodeClusterSpec
+    public class RemotingAndClusterTests : MultiNodeClusterSpec
     {
         private TimeSpan EpsilonValueForWithins => new TimeSpan(0, 0, 1);
 
@@ -63,9 +63,9 @@ namespace Akka.NetTests
         private static Address? _seedNode1Address;
         private ImmutableList<Address?> SeedNodes => ImmutableList.Create(_seedNode1Address, GetAddress(_config.Seed2));
 
-        public RestartNode2Spec() : this(new RestartNode2SpecConfig()) { }
+        public RemotingAndClusterTests() : this(new RestartNode2SpecConfig()) { }
 
-        protected RestartNode2Spec(RestartNode2SpecConfig config) : base(config, typeof(RestartNode2Spec))
+        protected RemotingAndClusterTests(RestartNode2SpecConfig config) : base(config, typeof(RemotingAndClusterTests))
         {
             _config = config;
             _seed1System = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, Sys.Settings.Config));
@@ -153,12 +153,6 @@ namespace Akka.NetTests
 
         [Fact] // Change to MultiNodeFact when you start implementing.
         public void NodesCommunicateViaDistributedPublishSubscribe()
-        {
-            throw new NotImplementedException();
-        }
-
-        [Fact] // Change to MultiNodeFact when you start implementing.
-        public void NodesEstablishTheStream()
         {
             throw new NotImplementedException();
         }

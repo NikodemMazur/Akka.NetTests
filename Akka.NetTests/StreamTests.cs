@@ -436,7 +436,7 @@ namespace Akka.NetTests
                         .AddAttributes(StreamRefAttributes.CreateSubscriptionTimeout(subscriptionTimeout)),
                         Sys.Materializer());
 
-                Task.Delay(subscriptionTimeout).Wait();
+                Task.Delay(subscriptionTimeout + TimeSpan.FromSeconds(1)).Wait();
 
                 await sourceRef.Source.RunWith(Sink.Ignore<string>(), Sys.Materializer());
             });

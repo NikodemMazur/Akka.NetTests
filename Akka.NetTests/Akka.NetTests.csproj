@@ -13,6 +13,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <GenerateSerializationAssemblies />
     <OutputPath>..\bin\x64\Debug\</OutputPath>
+    <DefineConstants>TRACE;RUNMNTR</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Akka" Version="1.4.5" />
@@ -48,6 +49,6 @@
     </PackageReference>
   </ItemGroup>
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="cd $(TargetDir) &amp; $(SolutionDir)bin\$(PlatformName)\$(ConfigurationName)\Akka.MultiNodeTestRunner.exe  $(TargetFileName) -Dmultinode.output-directory=$(TargetDir)MultiNodeTestRunnerOutput -Dmultinode.clear-output=1" />
+    <Exec Command="if &quot;$(DefineConstants.Contains('RUNMNTR'))&quot; == &quot;True&quot; cd $(TargetDir) &amp; $(SolutionDir)bin\$(PlatformName)\$(ConfigurationName)\Akka.MultiNodeTestRunner.exe  $(TargetFileName) -Dmultinode.output-directory=$(TargetDir)MultiNodeTestRunnerOutput -Dmultinode.clear-output=1" />
   </Target>
 </Project>

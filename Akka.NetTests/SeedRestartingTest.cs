@@ -5,16 +5,15 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Cluster;
 using Akka.Cluster.TestKit;
 using Akka.Configuration;
-using Akka.DistributedData;
-using Akka.Event;
 using Akka.Remote.TestKit;
 using Akka.TestKit;
 using FluentAssertions;
-using Xunit;
+using System.Security.Policy;
 
 namespace Akka.NetTests
 {
@@ -74,7 +73,7 @@ namespace Akka.NetTests
             _seed1System = new Lazy<ActorSystem>(() => ActorSystem.Create(Sys.Name, Sys.Settings.Config));
             _restartedSeed1System = new Lazy<ActorSystem>(
             () => ActorSystem.Create(Sys.Name, ConfigurationFactory
-            .ParseString("akka.remote.netty.tcp.port = " + SeedNodes.First()!.Port)
+            .ParseString("akka.remote.dot-netty.tcp.port = " + SeedNodes.First()!.Port)
             .WithFallback(Sys.Settings.Config)));
         }
 
@@ -85,8 +84,8 @@ namespace Akka.NetTests
                 Shutdown(_seed1System.Value);
                 if (SeedNodes.All(a => a != null))
                     Shutdown(_restartedSeed1System.Value);
-        //Shutdown(seed1System.Value.WhenTerminated.IsCompleted ? restartedSeed1System.Value : seed1System.Value);
-    }, _config.Seed1);
+                //Shutdown(seed1System.Value.WhenTerminated.IsCompleted ? restartedSeed1System.Value : seed1System.Value);
+            }, _config.Seed1);
         }
 
         [MultiNodeFact]
@@ -95,154 +94,63 @@ namespace Akka.NetTests
             Within(TimeSpan.FromSeconds(60), () =>
             {
                 RunOn(() =>
-        {
-        // seed1System is a separate ActorSystem, to be able to simulate restart
-        // we must transfer its address to seed2
-        Sys.ActorOf(Props.Create<Watcher>().WithDeploy(Deploy.Local), "address-receiver");
-                EnterBarrier("seed1-address-receiver-ready");
-            }, _config.Seed2);
+                {
+                    // seed1System is a separate ActorSystem, to be able to simulate restart
+                    // we must transfer its address to seed2
+                    Sys.ActorOf(Props.Create<Watcher>().WithDeploy(Deploy.Local), "address-receiver");
+                    EnterBarrier("seed1-address-receiver-ready");
+                }, _config.Seed2);
 
 
                 RunOn(() =>
-        {
-                EnterBarrier("seed1-address-receiver-ready");
-                _seedNode1Address = Akka.Cluster.Cluster.Get(_seed1System.Value).SelfAddress;
-                var seedNode1Address = Akka.Cluster.Cluster.Get(_seed1System.Value).SelfAddress;
-                Sys.ActorSelection(new RootActorPath(GetAddress(_config.Seed2)) / "user" / "address-receiver").Tell(seedNode1Address);
-                ExpectMsg("ok", TimeSpan.FromSeconds(5));
-                EnterBarrier("seed1-address-transferred");
-            }, _config.Seed1);
+                {
+                    EnterBarrier("seed1-address-receiver-ready");
+                    _seedNode1Address = Akka.Cluster.Cluster.Get(_seed1System.Value).SelfAddress;
+                    var seedNode1Address = Akka.Cluster.Cluster.Get(_seed1System.Value).SelfAddress;
+                    Sys.ActorSelection(new RootActorPath(GetAddress(_config.Seed2)) / "user" / "address-receiver").Tell(seedNode1Address);
+                    ExpectMsg("ok", TimeSpan.FromSeconds(5));
+                    EnterBarrier("seed1-address-transferred");
+                }, _config.Seed1);
 
-        // now we can join seed1System, seed2 together
-        RunOn(() =>
-        {
-                Akka.Cluster.Cluster.Get(_seed1System.Value).JoinSeedNodes(SeedNodes);
-                AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.Count.Should().Be(2));
-                AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
-            }, _config.Seed1);
+                // now we can join seed1System, seed2 together
+                RunOn(() =>
+                {
+                    Akka.Cluster.Cluster.Get(_seed1System.Value).JoinSeedNodes(SeedNodes);
+                    AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.Count.Should().Be(2));
+                    AwaitAssert(() => Akka.Cluster.Cluster.Get(_seed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
+                }, _config.Seed1);
 
                 RunOn(() =>
-        {
-                EnterBarrier("seed1-address-transferred");
-                Cluster.JoinSeedNodes(SeedNodes);
-                AwaitMembersUp(2);
-            }, _config.Seed2);
+                {
+                    EnterBarrier("seed1-address-transferred");
+                    Cluster.JoinSeedNodes(SeedNodes);
+                    AwaitMembersUp(2);
+                }, _config.Seed2);
                 EnterBarrier("started");
 
-        // shutdown seed1System
-        RunOn(() =>
-        {
-                Shutdown(_seed1System.Value, RemainingOrDefault);
-            }, _config.Seed1);
+                // shutdown seed1System
+                RunOn(() =>
+                {
+                    Shutdown(_seed1System.Value, RemainingOrDefault);
+                }, _config.Seed1);
                 EnterBarrier("seed1-shutdown");
 
                 RunOn(() =>
-        {
-                Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).JoinSeedNodes(SeedNodes);
-                Within(TimeSpan.FromSeconds(30), () =>
-        {
-                AwaitAssert(() => Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).State.Members.Count.Should().Be(2));
-                AwaitAssert(() => Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
-            }, EpsilonValueForWithins);
-            }, _config.Seed1);
+                {
+                    Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).JoinSeedNodes(SeedNodes);
+                    Within(TimeSpan.FromSeconds(30), () =>
+                    {
+                        AwaitAssert(() => Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).State.Members.Count.Should().Be(2));
+                        AwaitAssert(() => Akka.Cluster.Cluster.Get(_restartedSeed1System.Value).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
+                    }, EpsilonValueForWithins);
+                }, _config.Seed1);
 
                 RunOn(() =>
-        {
-                AwaitMembersUp(2);
-            }, _config.Seed2);
+                {
+                    AwaitMembersUp(2);
+                }, _config.Seed2);
                 EnterBarrier("seed1-restarted");
             }, EpsilonValueForWithins);
-        }
-    }
-    public class DistributedPublishSubscribeTest : MultiNodeClusterSpec
-    {
-        public class PubSubSpecConfig : MultiNodeConfig
-        {
-            public RoleName Seed0 { get; }
-
-            public RoleName Seed1 { get; }
-
-            public PubSubSpecConfig()
-            {
-                Seed0 = Role("seed0");
-                Seed1 = Role("seed1");
-
-                CommonConfig = DebugConfig(true)
-                .WithFallback(ConfigurationFactory.ParseString(@"
-    akka.cluster.auto-down-unreachable-after = 2s
-    akka.cluster.retry-unsuccessful-join-after = 3s
-    akka.remote.retry-gate-closed-for = 45s
-    akka.remote.log-remote-lifecycle-events = INFO
-    "))
-                .WithFallback(MultiNodeClusterSpec.ClusterConfig());
-            }
-        }
-
-        private class Watcher : ReceiveActor
-        {
-            private Address? _watchee;
-            public Watcher()
-            {
-                Receive<Address>(a => _watchee = a);
-                Receive<string>(str => str == "get", _ => Sender.Tell(_watchee));
-            }
-        }
-
-        private const string _systemName = "PubSubSystem";
-        private const int _actorSystem0Port = 2137;
-        private const int _actorSystem1Port = 2138;
-        private readonly TimeSpan _epsilonValueForWithins = TimeSpan.FromSeconds(1);
-        private readonly PubSubSpecConfig _config;
-        private readonly Lazy<ActorSystem> _actorSystem0;
-        private readonly Lazy<ActorSystem> _actorSystem1;
-
-        protected override void AfterTermination()
-        {
-            RunOn(delegate
-            {
-                if (_actorSystem0.IsValueCreated)
-                    _actorSystem0.Value.Terminate().Wait();
-            }, _config.Seed0);
-
-            RunOn(delegate
-            {
-                if (_actorSystem1.IsValueCreated)
-                    _actorSystem1.Value.Terminate().Wait();
-            }, _config.Seed1);
-        }
-
-        protected DistributedPublishSubscribeTest(PubSubSpecConfig config) : base(config, typeof(DistributedPublishSubscribeTest))
-        {
-            // I decided to use my own spawned actors. Not seeds.
-            _config = config;
-            _actorSystem0 = new Lazy<ActorSystem>(() => ActorSystem.Create(_systemName, 
-                ConfigurationFactory.ParseString("akka.remote.netty.tcp.port = " + _actorSystem0Port)
-                                    .WithFallback(Sys.Settings.Config)));
-            _actorSystem1 = new Lazy<ActorSystem>(() => ActorSystem.Create(_systemName,
-                ConfigurationFactory.ParseString("akka.remote.netty.tcp.port = " + _actorSystem1Port)
-                                    .WithFallback(Sys.Settings.Config)));
-        }
-
-        public DistributedPublishSubscribeTest() : this(new PubSubSpecConfig()) { }
-
-        [MultiNodeFact] // Change to MultiNodeFact when you start implementing.
-        public void NodesCommunicateViaDistributedPublishSubscribe()
-        {
-            Within(TimeSpan.FromSeconds(60), () =>
-            {
-                RunOn(() =>
-                {
-                    var logger = Logging.GetLogger(_actorSystem0.Value, _actorSystem0.Value);
-                    var actor0Addr = Akka.Cluster.Cluster.Get(_actorSystem0.Value).SelfAddress;
-                    logger.Debug($"#DEBUG# Actor 0 address: {actor0Addr}");
-                    Assert.Equal($"akka.tcp://{_systemName}@localhost:{_actorSystem0Port}", actor0Addr.ToString());
-                }, _config.Seed0);
-
-                RunOn(() =>
-                {
-                    Assert.True(true);
-                }, _config.Seed1);
-            }, _epsilonValueForWithins);
         }
     }
 }

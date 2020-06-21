@@ -14,6 +14,7 @@ using Akka.Remote.TestKit;
 using Akka.TestKit;
 using FluentAssertions;
 using System.Security.Policy;
+using Xunit;
 
 namespace Akka.NetTests
 {

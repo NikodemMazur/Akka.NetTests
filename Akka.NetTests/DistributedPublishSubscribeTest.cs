@@ -60,7 +60,7 @@ namespace Akka.NetTests
                         sack.Subscribe.Ref.Equals(Self) &&
                         sack.Subscribe.Group == null)
                         managerActor.Tell("Subscription registered.");
-                        _logger.Debug($"#DEBUG# Subscription confirmed.");
+                    _logger.Debug($"#DEBUG# Subscription confirmed.");
                 });
 
                 Receive<string>(msg =>
@@ -160,7 +160,7 @@ namespace Akka.NetTests
 
                     var actorSys0Addr = new Address("akka.tcp", _systemName, "localhost", _actorSystem0Port);
                     var actorSys1Addr = new Address("akka.tcp", _systemName, "localhost", _actorSystem1Port);
-                    
+
                     Akka.Cluster.Cluster.Get(_actorSystem).JoinSeedNodes(new[] { actorSys1Addr, actorSys0Addr });
                     AwaitAssert(() => Akka.Cluster.Cluster.Get(_actorSystem).State.Members.Count.Should().Be(2));
                     AwaitAssert(() => Akka.Cluster.Cluster.Get(_actorSystem).State.Members.All(x => x.Status == MemberStatus.Up).Should().BeTrue());
@@ -181,14 +181,14 @@ namespace Akka.NetTests
                     EnterBarrier("subscriber-spawned");
                 }, _config.Node1);
 
-               // Spawn the publisher. Publish a message.
-               RunOn(() =>
-               {
-                   EnterBarrier("subscriber-spawned");
+                // Spawn the publisher. Publish a message.
+                RunOn(() =>
+                {
+                    EnterBarrier("subscriber-spawned");
 
-                   var pubActor = _actorSystem!.ActorOf(Props.Create<PublisherActor>().WithDeploy(Deploy.Local), "publisher");
-                   pubActor.Tell("Published message.");
-               }, _config.Node2);
+                    var pubActor = _actorSystem!.ActorOf(Props.Create<PublisherActor>().WithDeploy(Deploy.Local), "publisher");
+                    pubActor.Tell("Published message.");
+                }, _config.Node2);
 
                 RunOn(() =>
                 {

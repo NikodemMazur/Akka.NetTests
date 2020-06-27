@@ -870,7 +870,7 @@ namespace Akka.NetTests
                 Receive<CheckIfAllDead>(_ =>
                 {
                 var setDiff = _markedWithDeath.Except(_collected);
-                    if (setDiff.Count() == 1 && setDiff.Contains(Self))
+                    if (_collected.Count() != 0 && setDiff.Count() == 1 && setDiff.Contains(Self))
                     {
                         Context.Stop(Self);
                         Context.System.Terminate();

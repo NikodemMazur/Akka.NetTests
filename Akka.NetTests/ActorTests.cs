@@ -17,7 +17,9 @@ using Akka.Event;
 using Akka.IO;
 using Akka.Persistence;
 using Akka.Routing;
+using Akka.Streams.Implementation.Fusing;
 using Akka.TestKit;
+using Microsoft.VisualBasic;
 using Xunit;
 
 namespace Akka.NetTests
@@ -101,7 +103,7 @@ namespace Akka.NetTests
                     Sender.Tell(cts, Self);
                     try
                     {
-                        Task.Delay((int) TimeSpan.FromMinutes(7).TotalMilliseconds, cts.Token)
+                        Task.Delay((int)TimeSpan.FromMinutes(7).TotalMilliseconds, cts.Token)
                             .Wait();
                     }
                     catch
@@ -146,10 +148,10 @@ namespace Akka.NetTests
 
             protected override SupervisorStrategy SupervisorStrategy()
             {
-                return new OneForOneStrategy(5, 
-                    TimeSpan.FromMinutes(1), 
-                    ex => ex is NullReferenceException 
-                        ? Directive.Escalate 
+                return new OneForOneStrategy(5,
+                    TimeSpan.FromMinutes(1),
+                    ex => ex is NullReferenceException
+                        ? Directive.Escalate
                         : Directive.Resume);
             }
 
@@ -158,11 +160,11 @@ namespace Akka.NetTests
                 switch (message)
                 {
                     case Props p:
-                    {
-                        var child = Context.ActorOf(p);
-                        Sender.Tell(child);
-                        break;
-                    }
+                        {
+                            var child = Context.ActorOf(p);
+                            Sender.Tell(child);
+                            break;
+                        }
                     case IActorRef a:
                         _friend = a;
                         break;
@@ -343,7 +345,7 @@ namespace Akka.NetTests
 
             Assert.Equal("Echo.", result);
 
-            await Assert.ThrowsAsync<AskTimeoutException>(() => 
+            await Assert.ThrowsAsync<AskTimeoutException>(() =>
                 aut.Ask<string>("Echo.", TimeSpan.FromMilliseconds(100)));
 
             await Assert.ThrowsAsync<AskTimeoutException>(() =>
@@ -381,7 +383,7 @@ namespace Akka.NetTests
 
             failingActor.Tell("Dead letter.");
 
-            probe.ExpectMsg<DeadLetter>(dl => 
+            probe.ExpectMsg<DeadLetter>(dl =>
                 (string)dl.Message == "Dead letter.");
 
             Sys.EventStream.Unsubscribe(probe.Ref);
@@ -408,7 +410,7 @@ namespace Akka.NetTests
 
             Unwatch(aut);
 
-            probe.ExpectMsg<DeadLetter>(dl => 
+            probe.ExpectMsg<DeadLetter>(dl =>
                 (string)dl.Message == "Hi, stash this message.");
             probe.ExpectMsg<DeadLetter>(dl =>
                 (string)dl.Message == "Stash this as well.");
@@ -497,9 +499,9 @@ namespace Akka.NetTests
             Unwatch(supervisor);
 
             child.Tell("Are you alive?");
-            probe.ExpectMsg<DeadLetter>(dl => 
-                (string) dl.Message == "Are you alive?"); // Child is killed along with supervisor
-                                                          // therefore the last msg becomes a dead letter.
+            probe.ExpectMsg<DeadLetter>(dl =>
+                (string)dl.Message == "Are you alive?"); // Child is killed along with supervisor
+                                                         // therefore the last msg becomes a dead letter.
 
             Sys.EventStream.Unsubscribe(probe.Ref);
         }
@@ -581,9 +583,9 @@ namespace Akka.NetTests
             var randomPoolRouterProps = Props.Create<SimulatingHardWorkActor>(probe.Ref).WithRouter(randomPoolRouter);
             var randomPoolRouterActor = Sys.ActorOf(randomPoolRouterProps, "randPoolRouter");
 
-            var broadcastRouterActor = 
+            var broadcastRouterActor =
                 Sys.ActorOf(Props.Create<ForwardingActor>(randomPoolRouterActor).WithRouter(new BroadcastPool(50)), "bcastRouter");
-            
+
             randomPoolRouterActor.Tell(GetRoutees.Instance);
             var routeesBefore = ExpectMsg<Routees>();
             Assert.Equal(routeesBefore.Members.Count(), randomPoolRouter.NrOfInstances);
@@ -658,7 +660,7 @@ namespace Akka.NetTests
             static Uninitialized()
             {
                 Instance = new Uninitialized();
-            } 
+            }
             public static Uninitialized Instance { get; }
         }
 
@@ -757,7 +759,7 @@ namespace Akka.NetTests
             aut.Tell(new AppendEvent(texts[2]));
 
             var expectedFileContent = string.Concat(texts);
-            var actualFileContent = 
+            var actualFileContent =
                 await WaitForFileContentAsync(expectedFileContent, tempFilePath, TimeSpan.FromSeconds(3.5));
 
             Assert.Equal(expectedFileContent, actualFileContent);
@@ -824,37 +826,125 @@ namespace Akka.NetTests
             Assert.Equal("updated field", answer);
         }
 
-        public class DeathWatchActor : ReceiveActor
+        public class GrimReaperActor : ReceiveActor
         {
-            private IList<IActorRef> _watchees = new List<IActorRef>();
-            public DeathWatchActor()
+            private class CheckIfAllDead { }
+            private class BroadcastIdentification { }
+
+            private IList<IActorRef> _markedWithDeath = new List<IActorRef>();
+            private IList<IActorRef> _collected = new List<IActorRef>();
+
+            public GrimReaperActor(string actorPath, TimeSpan markWithDeathInterval, TimeSpan collectSoulsInterval)
             {
-                var actorSelection = Context.System.ActorSelection("/user/*");
-                    actorSelection.Tell(new Identify(new object()));
-                Receive<ActorIdentity>(ai => 
-                    _watchees.Add(ai.Subject));
-                Receive<int>(i =>
+                var actorSelection = Context.System.ActorSelection(actorPath);
+
+                Context.System.Scheduler.ScheduleTellRepeatedly(
+                    TimeSpan.Zero,
+                    markWithDeathInterval,
+                    Self,
+                    new BroadcastIdentification(),
+                    Self
+                    );
+
+                Context.System.Scheduler.ScheduleTellRepeatedly(
+                    TimeSpan.Zero,
+                    collectSoulsInterval,
+                    Self,
+                    new CheckIfAllDead(),
+                    Self
+                    );
+
+                Receive<ActorIdentity>(ai =>
                 {
-                    if (_watchees.Count() >= i)
-                        Sender.Tell(_watchees.AsEnumerable());
+                    _collected.Remove(ai.Subject);
+                    _markedWithDeath.Add(ai.Subject);
+                    Context.Watch(ai.Subject);
                 });
+
+                Receive<Terminated>(t =>
+                {
+                    _markedWithDeath.Remove(t.ActorRef);
+                    _collected.Add(t.ActorRef);
+                    Context.Unwatch(t.ActorRef);
+                });
+
+                Receive<CheckIfAllDead>(_ =>
+                {
+                    if (_markedWithDeath.SequenceEqual(new[] { Self }))
+                    {
+                        Context.Stop(Self);
+                        Context.System.Terminate();
+                    }
+                });
+
+                Receive<BroadcastIdentification>(_ => actorSelection.Tell(new Identify(new object())));
+
+                Receive<RequestMarkedWithDeathList>(msg =>
+                    Task.Run(() => SpinWait.SpinUntil(() => _markedWithDeath.Count() >= msg.MinCount, msg.Timeout))
+                        .PipeTo(Sender, success: success => success ? (object)_markedWithDeath.AsEnumerable() : new TimeoutException()));
+
+                Receive<RequestCollectedList>(msg =>
+                    Task.Run(() => SpinWait.SpinUntil(() => _collected.Count() >= msg.MinCount, msg.Timeout))
+                        .PipeTo(Sender, success: success => success ? (object)_collected.AsEnumerable() : new TimeoutException()));
             }
         }
 
-        [Fact]
-        public void DeathWatchActorFindsAllUserActorsAndWatchesThem()
+        public class RequestMarkedWithDeathList
         {
-            var sys = ActorSystem.Create("mySys");
-            var a0 = sys.ActorOf(Props.Empty, "actor0");
-            var a1 = sys.ActorOf(Props.Empty, "actor1");
-            var a2 = sys.ActorOf(Props.Empty, "actor2");
-            var dwa = sys.ActorOf<DeathWatchActor>("deathWatchActor");
-            Thread.Sleep(3000);
-            var watchees = dwa.Ask<IEnumerable<IActorRef>>(3, TimeSpan.FromSeconds(3)).Result;
-            Assert.Contains(a0, watchees);
-            Assert.Contains(a1, watchees);
-            Assert.Contains(a2, watchees);
-            Assert.Contains(dwa, watchees);
+            public RequestMarkedWithDeathList(int minCount, TimeSpan timeout)
+            {
+                MinCount = minCount;
+                Timeout = timeout;
+            }
+
+            public int MinCount { get; }
+            public TimeSpan Timeout { get; }
+        }
+        public class RequestCollectedList
+        {
+            public RequestCollectedList(int minCount, TimeSpan timeout)
+            {
+                MinCount = minCount;
+                Timeout = timeout;
+            }
+
+            public int MinCount { get; }
+            public TimeSpan Timeout { get; }
+        }
+
+        [Fact]
+        public void DeathWatchActorFindsAllUserActorsAndTerminatesSystemWhenAllTheseActorsStop()
+        {
+            Within(TimeSpan.FromSeconds(3), () =>
+            {
+                var sys = ActorSystem.Create("mySys");
+
+                var dwaProps = Props.Create<GrimReaperActor>("/user/*", TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(200));
+                var dwa = sys.ActorOf(dwaProps, "grimReaper");
+                dwa.Tell(new RequestCollectedList(2, TimeSpan.FromSeconds(3)));
+                dwa.Tell(new RequestMarkedWithDeathList(4, TimeSpan.FromSeconds(3)));
+
+                var w0 = sys.ActorOf(Props.Empty, "worker0");
+                var w1 = sys.ActorOf(Props.Empty, "worker1");
+                var w2 = sys.ActorOf(Props.Empty, "worker2");
+
+                var marked = ExpectMsg<IEnumerable<IActorRef>>(TimeSpan.FromSeconds(3));
+                Assert.Contains(w0, marked);
+                Assert.Contains(w1, marked);
+                Assert.Contains(w2, marked);
+                Assert.Contains(dwa, marked);
+
+                w0.Tell(PoisonPill.Instance);
+                w1.Tell(PoisonPill.Instance);
+
+                var collected = ExpectMsg<IEnumerable<IActorRef>>(TimeSpan.FromSeconds(3));
+                Assert.Contains(w0, collected);
+                Assert.Contains(w1, collected);
+
+                w2.Tell(PoisonPill.Instance);
+
+                sys.WhenTerminated.Wait(TimeSpan.FromSeconds(3));
+            }, TimeSpan.FromSeconds(1));
         }
     }
 }

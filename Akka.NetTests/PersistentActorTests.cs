@@ -1,7 +1,9 @@
 ﻿using Akka.Actor;
+using Akka.Configuration;
 using Akka.Configuration.Hocon;
 using Akka.Persistence;
 using Akka.Persistence.Query;
+using Akka.Persistence.Sqlite;
 using Akka.Persistence.TestKit;
 using Akka.Remote.Transport;
 using Akka.Streams.Implementation.Fusing;
@@ -12,7 +14,9 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
+using System.Net.WebSockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Akka.NetTests
@@ -130,6 +134,9 @@ namespace Akka.NetTests
                         _state = state;
                         _replayedMsgSender = Sender;
                         break;
+                    case RecoveryCompleted _:
+                        DeleteMessages(long.MaxValue);
+                        break;
                     default:
                         break;
                 }
@@ -151,13 +158,35 @@ namespace Akka.NetTests
         [Fact]
         public void ActorRecoversItsStateWithEventsWhenRestarted()
         {
-            var pa = Sys.ActorOf<PersistentActor>();
+            var config = Configuration.ConfigurationFactory.ParseString(@"
+akka
+{
+  persistence
+  {
+    journal
+    {
+      plugin = ""akka.persistence.journal.sqlite""
+      auto-start-journals = [""akka.persistence.journal.sqlite""]
+      sqlite
+      {
+        class = ""Akka.Persistence.Sqlite.Journal.SqliteJournal, Akka.Persistence.Sqlite""
+        connection-string = ""data source=C:\\SQLite\\Databases\\AkkaNetTestsEventStore.db""
+        auto-initialize : on
+      }
+    }
+  }
+}
+");
+            var sys = ActorSystem.Create("my-sys", config.WithFallback(ConfigurationFactory.Default()));
+            SqlitePersistence.Get(sys); // Initialize the extension.
+            var pa = sys.ActorOf<PersistentActor>();
             pa.Tell(new Cmd("cmd 0"));
             pa.Tell(new Cmd("cmd 1"));
             pa.Tell("restart");
             ExpectMsg("I'm being restarted.");
             pa.Tell("print");
-            ExpectMsg("cmd 0 - num of events before: 0, cmd 1 - num of events before: 1");
+            //ExpectMsg("cmd 0 - num of events before: 0, cmd 1 - num of events before: 1");
+            ExpectMsg<string>(msg => msg.Contains("cmd 0") && msg.Contains("cmd 1"));
             pa.Tell("count");
             ExpectMsg<int>(count => count == 2);
         }

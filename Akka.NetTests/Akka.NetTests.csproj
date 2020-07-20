@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>netcoreapp3.1</TargetFramework>
@@ -30,6 +30,7 @@
     <PackageReference Include="Akka.Logger.NLog" Version="1.4.5" />
     <PackageReference Include="Akka.Persistence" Version="1.4.8" />
     <PackageReference Include="Akka.Persistence.Query" Version="1.4.8" />
+    <PackageReference Include="Akka.Persistence.Sqlite" Version="1.4.8" />
     <PackageReference Include="Akka.Persistence.TestKit" Version="1.4.8" />
     <PackageReference Include="Akka.Persistence.TestKit.Xunit2" Version="1.4.8" />
     <PackageReference Include="Akka.Remote" Version="1.4.8" />

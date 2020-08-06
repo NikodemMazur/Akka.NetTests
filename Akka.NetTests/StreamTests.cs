@@ -185,6 +185,15 @@ namespace Akka.NetTests
             const int subscriberMaxCount = 16;
             const int bufferSize = 4;
 
+            //       Source         ToMat          Bidi      
+            //   +------------+               +------------+ 
+            //   |  MergeHub  |               |BroadcastHub| 
+            //   |   Source   | ~> Message ~> |    Sink    | 
+            //   |            |               |            | 
+            //   +------------+               +------------+ 
+            //   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            //   ~~    (Sink<Message>, Source<Message>)   ~~
+            //   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             (Sink<string, NotUsed> mergeSink, Source<string, NotUsed> mergeSource) =
                 MergeHub.Source<string>(perProducerBufferSize: publisherMaxCount)
                         .ToMaterialized(BroadcastHub.Sink<string>(bufferSize: subscriberMaxCount), Keep.Both)
@@ -193,6 +202,15 @@ namespace Akka.NetTests
             TestProbe sub0 = CreateTestProbe();
             TestProbe sub1 = CreateTestProbe();
 
+            //        Flow         JoinMat         Bidi                  
+            //   +------------+               +------------+            
+            //   |  FromSink  | ~> Message ~> |KillSwitches| ~> Message 
+            //   |     And    |               |   Single   |            
+            //   |    Source  | <~ Message <~ |    Bidi    | <~ Message 
+            //   +------------+               +------------+            
+            //   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            //   ~~                 UniqueKillSwitch                 ~~
+            //   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             Flow<string, string, UniqueKillSwitch> busFlow =
                 Flow.FromSinkAndSource(mergeSink, mergeSource)
                     .JoinMaterialized(KillSwitches.SingleBidi<string, string>(), Keep.Right);
